@@ -38,4 +38,4 @@ def get_suite(name: str) -> list[BenchmarkTask]:
     return [cls() for cls in _SUITES[name]]
 
 
-from . import longhorizon  # noqa: E402,F401 — registers the default suite
+from . import longhorizon, training_pool  # noqa: E402,F401 — register built-in suites

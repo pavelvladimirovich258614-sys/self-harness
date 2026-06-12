@@ -5,6 +5,9 @@ gcp:
   project_id: "self-harness-research"
   location: "us-central1"
 
+agent:
+  model: "vertex"
+
 tracing:
   sink: "bigquery"
   bigquery:

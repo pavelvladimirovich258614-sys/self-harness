@@ -27,6 +27,7 @@ class LocalDockerSandbox(Sandbox):
         suite: str,
         episodes_per_task: int,
         limits: SandboxLimits,
+        seed: int = 0,
     ) -> SandboxResult:
         results_dir = Path(tempfile.mkdtemp(prefix="sh-results-"))
         cmd = [
@@ -47,6 +48,7 @@ class LocalDockerSandbox(Sandbox):
             "--artifacts-dir", "/artifacts",
             "--suite", suite,
             "--episodes-per-task", str(episodes_per_task),
+            "--seed", str(seed),
             "--output", "/results/scores.json",
         ]
 

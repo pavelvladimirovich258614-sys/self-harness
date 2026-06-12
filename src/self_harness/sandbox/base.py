@@ -39,8 +39,13 @@ class Sandbox(abc.ABC):
         suite: str,
         episodes_per_task: int,
         limits: SandboxLimits,
+        seed: int = 0,
     ) -> SandboxResult:
         """Run the benchmark suite for one candidate harness in isolation.
+
+        Candidate and incumbent must be evaluated with identical `seed`,
+        `episodes_per_task`, and `limits` — the promotion gate assumes
+        matched conditions.
 
         The sandbox mounts the candidate's artifact directory read-only,
         executes `python -m self_harness.evaluation.pipeline` inside the

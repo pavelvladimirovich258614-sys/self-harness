@@ -24,11 +24,16 @@ class Agent:
         tools: dict[str, Callable[..., Any]],
         collector: TraceCollector,
         max_steps: int = 60,
+        payload_max_chars: int = 65_536,
     ):
         self.harness = harness
         self.tools = tools
         self.collector = collector
         self.max_steps = max_steps
+        # Raw-trace fidelity matters: the mutation engine consumes these
+        # payloads verbatim. The cap exists only to bound pathological tool
+        # outputs; it is set high and configurable, never a summary.
+        self.payload_max_chars = payload_max_chars
 
     def run(self, task: str) -> AgentState:
         """Execute one long-horizon episode under the current harness."""
@@ -53,7 +58,7 @@ class Agent:
                 self.collector.record(
                     run_id, SpanKind.TOOL_CALL,
                     {"tool": action.payload.get("name"), "args": action.payload.get("args"),
-                     "result_preview": str(result)[:2000]},
+                     "result_preview": str(result)[: self.payload_max_chars]},
                     t0,
                 )
             else:

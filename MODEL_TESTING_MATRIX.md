@@ -8,6 +8,11 @@
 > Global status: **all entries [NOT YET TESTED / PENDING GCP COMPUTE GRANT]**.
 > No benchmark numbers appear in this document by design; the matrix defines
 > the experiments the requested credits will fund.
+>
+> Model identifiers in this matrix are subject to confirmation against the
+> current Vertex AI Model Garden at experiment kickoff; roles and protocols
+> are identifier-stable (any model in the stated capability class slots into
+> the same arm).
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -143,9 +148,11 @@ Pipeline and pre-checks for gating.
 Central hypothesis of this tier: **a harness written by frontier models
 (Gemini 3.x) materially raises the success rate of small open-weight models
 (Gemma) on long-horizon tasks** — i.e., harness intelligence partially
-substitutes for parameter count. Target agents execute exclusively inside the
-GKE sandbox (`gke_sandbox_evaluator` path) on GPU node pools, under the
-standard isolation profile (gVisor, deny-all egress, no credentials).
+substitutes for parameter count. Isolation split (THREAT_MODEL.md, B2):
+mutated harness code runs under the full sandbox profile (gVisor, deny-all
+egress, zero credentials) on CPU; trusted model weights are served by vLLM
+on separate GPU node pools *outside* gVisor, reachable from the sandbox only
+via the NetworkPolicy-allowlisted in-cluster endpoint.
 
 ### 3.1 Gemma 4 31B Dense
 
@@ -296,7 +303,13 @@ baseline for that family.
 
 Every row in this matrix is blocked on the same resource class: sustained
 Vertex AI inference for the mutation tier, GPU node pools for the open-weight
-executor tier, and BigQuery capacity for trace analytics. The experiments are
-designed, the framework is implemented and tested at the unit level
-(`tests/`), and the loop runs end-to-end on local backends. The grant
-converts this matrix from a plan into data.
+executor tier, and BigQuery capacity for trace analytics. Current state,
+precisely: the framework is implemented; the full loop — trace collection,
+analysis, mutation registration, oscillation tabu, sandboxed scoring, and
+statistical gating, including the promotion path and the no-op control arm —
+is validated end-to-end in-process with a deterministic stub model
+(`tests/test_e2e_loop.py`). What does NOT yet exist is any run against a live
+model endpoint or cluster backend: those are exactly the experiments the
+requested credits fund, gated by the KPIs and milestones in README
+§KPIs & Milestones and the spend ceilings in README §Safety & Budget
+Controls. The grant converts this matrix from a plan into data.

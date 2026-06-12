@@ -8,8 +8,13 @@ Isolation profile (see infra/gke/sandbox-job.yaml):
 
 Lifecycle: create namespace → apply NetworkPolicy → submit Job with the
 candidate artifact baked in via ConfigMap → poll to completion → harvest the
-scores artifact from the result ConfigMap written by the evaluator →
-delete the namespace (deleting everything in it).
+scores from the terminated pod's logs (the evaluator prints them behind the
+`##SCORES##` marker) → delete the namespace (deleting everything in it).
+
+Result harvesting via pod logs is deliberate: the candidate pod has no
+service-account token, so it cannot write ConfigMaps or call any API to
+report results. Logs are the only channel that requires zero credentials
+on the untrusted side.
 """
 
 from __future__ import annotations
@@ -45,13 +50,14 @@ class GKESandbox(Sandbox):
         suite: str,
         episodes_per_task: int,
         limits: SandboxLimits,
+        seed: int = 0,
     ) -> SandboxResult:
         namespace = f"{self.namespace_prefix}{uuid.uuid4().hex[:8]}"
         t0 = time.monotonic()
         try:
             self._create_namespace(namespace)
             self._mount_candidate(namespace, harness_version, artifacts_dir)
-            self._submit_job(namespace, harness_version, suite, episodes_per_task, limits)
+            self._submit_job(namespace, harness_version, suite, episodes_per_task, limits, seed)
             return self._await_result(namespace, limits, t0)
         finally:
             self._teardown(namespace)
@@ -67,6 +73,20 @@ class GKESandbox(Sandbox):
                 labels={"app": "self-harness", "role": "mutation-sandbox"},
             ))
         )
+        self._apply_network_policies(namespace)
+
+    def _apply_network_policies(self, namespace: str) -> None:
+        """Apply the deny-all + model-endpoint-allowlist policies from the
+        template BEFORE the Job is admitted — the pod must never be schedulable
+        in a namespace without egress restrictions."""
+        import yaml
+        from kubernetes import client
+
+        networking = client.NetworkingV1Api()
+        with open(self.job_template) as f:
+            for doc in yaml.safe_load_all(f):
+                if doc.get("kind") == "NetworkPolicy":
+                    networking.create_namespaced_network_policy(namespace, doc)
 
     def _mount_candidate(self, namespace: str, version: str, artifacts_dir: str) -> None:
         """Ship the candidate harness artifact into the namespace as a
@@ -83,17 +103,18 @@ class GKESandbox(Sandbox):
         )
 
     def _submit_job(self, namespace: str, version: str, suite: str,
-                    episodes: int, limits: SandboxLimits) -> None:
+                    episodes: int, limits: SandboxLimits, seed: int) -> None:
         import yaml
 
         with open(self.job_template) as f:
-            job = yaml.safe_load(f)
+            job = next(doc for doc in yaml.safe_load_all(f) if doc.get("kind") == "Job")
         container = job["spec"]["template"]["spec"]["containers"][0]
         container["args"] = [
             "--harness-version", version,
             "--artifacts-dir", "/artifacts",
             "--suite", suite,
             "--episodes-per-task", str(episodes),
+            "--seed", str(seed),
             "--output", "/results/scores.json",
         ]
         container["resources"] = {
@@ -129,16 +150,25 @@ class GKESandbox(Sandbox):
         )
 
     def _harvest_scores(self, namespace: str) -> dict[str, float]:
-        cm = self.core.read_namespaced_config_map("results", namespace)
-        return json.loads(cm.data.get("scores.json", "{}"))
+        """Parse per-task scores from the terminated pod's logs. The evaluator
+        prints them behind SCORES_MARKER; the credential-free pod has no other
+        channel to report results."""
+        from ..evaluation.pipeline import SCORES_MARKER
 
-    def _pod_logs_tail(self, namespace: str) -> str:
+        logs = self._pod_logs_tail(namespace, tail_lines=2000)
+        for line in reversed(logs.splitlines()):
+            if line.startswith(SCORES_MARKER):
+                return json.loads(line[len(SCORES_MARKER):])
+        logger.error("no scores marker found in evaluator logs for %s", namespace)
+        return {}
+
+    def _pod_logs_tail(self, namespace: str, tail_lines: int = 80) -> str:
         pods = self.core.list_namespaced_pod(namespace, label_selector="job-name=evaluator")
         if not pods.items:
             return ""
         try:
             return self.core.read_namespaced_pod_log(
-                pods.items[0].metadata.name, namespace, tail_lines=80
+                pods.items[0].metadata.name, namespace, tail_lines=tail_lines
             )
         except Exception:  # noqa: BLE001 — logs are best-effort diagnostics
             return ""

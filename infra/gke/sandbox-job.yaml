@@ -15,6 +15,10 @@ spec:
       labels:
         job-name: evaluator
     spec:
+      # gVisor wraps ONLY the mutated harness code (CPU workload). Open-weight
+      # model serving (vLLM, GPU) runs on a separate node pool OUTSIDE gVisor —
+      # the model weights are trusted; only generated code is not. See
+      # THREAT_MODEL.md, boundary B2.
       runtimeClassName: gvisor     # User-space kernel between candidate code and node
       restartPolicy: Never
       automountServiceAccountToken: false   # No GCP credentials inside the pod
@@ -52,7 +56,7 @@ spec:
           emptyDir:
             sizeLimit: 256Mi
 ---
-# Deny-by-default egress; the model endpoint is allowlisted separately.
+# Baseline: deny all egress for every pod in the sandbox namespace.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -61,3 +65,51 @@ spec:
   podSelector: {}
   policyTypes: ["Egress"]
   egress: []
+---
+# Exception 1: cluster DNS only (kube-dns in kube-system).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Exception 2: the model endpoint, and nothing else.
+# private.googleapis.com VIP range (199.36.153.8/30) for Vertex AI via
+# Private Google Access; in-cluster open-weight serving (vLLM) is reached
+# via the namespaceSelector rule instead. No other egress exists.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-model-endpoint
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 199.36.153.8/30
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              self-harness/role: model-serving
+      ports:
+        - protocol: TCP
+          port: 8000

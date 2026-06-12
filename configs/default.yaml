@@ -5,15 +5,27 @@ loop:
   max_patch_attempts: 3      # Mutation retries per generation if validation fails
 
 agent:
-  model: "gemini-2.5-pro"
+  model: "stub"              # stub (scripted, for e2e validation) | vertex
+  vertex_model: "gemini-2.5-flash"
   max_steps: 60              # Hard cap on tool-use steps per long-horizon task
   step_timeout_s: 120
+  trace_payload_max_chars: 65536  # Raw-trace fidelity cap; bounds pathological tool output only
+
+training:
+  suite: "training"          # Training pool — MUST be disjoint from evaluation.suite
 
 mutation:
-  engine: "vertex_gemini"    # vertex_gemini | noop
+  engine: "noop"             # vertex_gemini | noop (control arm)
   model: "gemini-2.5-pro"
   max_trace_tokens: 900000   # Whole-trace budget fed to the mutation model
   temperature: 0.7
+
+budget:
+  max_total_usd: 500.0                     # Kill switch: loop aborts at this spend
+  max_mutation_tokens_per_generation: 1000000
+  max_sandbox_runs: 500
+  mutation_usd_per_mtoken: 2.50
+  sandbox_usd_per_run: 1.00
 
 sandbox:
   backend: "local_docker"    # local_docker | gke
@@ -26,8 +38,9 @@ tracing:
   sink: "memory"             # memory | bigquery
 
 evaluation:
-  suite: "longhorizon"
+  suite: "longhorizon"       # Frozen benchmark suite — never used for training traces
   episodes_per_task: 5
+  seed: 1337                 # Candidate and incumbent always share this seed
   promotion:
     min_relative_gain: 0.03  # Candidate must beat incumbent by >=3% success rate
     significance_alpha: 0.05

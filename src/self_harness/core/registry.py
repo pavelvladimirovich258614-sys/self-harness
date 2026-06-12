@@ -36,9 +36,24 @@ class HarnessRegistry:
             return self._head_file.read_text().strip()
         return "genesis"
 
+    @staticmethod
+    def content_digest(spec_json: str, harness_source: str) -> str:
+        return hashlib.sha256((spec_json + harness_source).encode()).hexdigest()[:12]
+
+    def has_content(self, digest: str) -> bool:
+        """Tabu check: a content digest already registered in any generation.
+
+        Blocks mutation oscillation (A -> B -> A): a patch whose content
+        matches any previously registered version is never re-evaluated.
+        """
+        return any(
+            p.is_dir() and p.name.endswith(f"-{digest}")
+            for p in self.artifacts_dir.iterdir()
+        )
+
     def register(self, spec_json: str, harness_source: str, lineage: Lineage) -> str:
         """Store a candidate version. Content-addressed; does not move HEAD."""
-        digest = hashlib.sha256((spec_json + harness_source).encode()).hexdigest()[:12]
+        digest = self.content_digest(spec_json, harness_source)
         version = f"g{lineage.generation:04d}-{digest}"
         version_dir = self.artifacts_dir / version
         version_dir.mkdir(parents=True, exist_ok=True)
