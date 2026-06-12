@@ -1,0 +1,34 @@
+# Self-optimization loop configuration (local iteration profile).
+loop:
+  generations: 10            # Number of mutate→evaluate→promote cycles
+  runs_per_generation: 20    # Agent rollouts collected before each mutation step
+  max_patch_attempts: 3      # Mutation retries per generation if validation fails
+
+agent:
+  model: "gemini-2.5-pro"
+  max_steps: 60              # Hard cap on tool-use steps per long-horizon task
+  step_timeout_s: 120
+
+mutation:
+  engine: "vertex_gemini"    # vertex_gemini | noop
+  model: "gemini-2.5-pro"
+  max_trace_tokens: 900000   # Whole-trace budget fed to the mutation model
+  temperature: 0.7
+
+sandbox:
+  backend: "local_docker"    # local_docker | gke
+  cpu_limit: "2"
+  memory_limit: "4Gi"
+  wall_clock_limit_s: 1800
+  network: "deny"            # Candidate harnesses get no egress by default
+
+tracing:
+  sink: "memory"             # memory | bigquery
+
+evaluation:
+  suite: "longhorizon"
+  episodes_per_task: 5
+  promotion:
+    min_relative_gain: 0.03  # Candidate must beat incumbent by >=3% success rate
+    significance_alpha: 0.05
+    bootstrap_samples: 10000

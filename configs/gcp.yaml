@@ -1,0 +1,27 @@
+# GCP-native profile: BigQuery telemetry, Vertex AI mutation engine, GKE sandbox.
+extends: default.yaml
+
+gcp:
+  project_id: "self-harness-research"
+  location: "us-central1"
+
+tracing:
+  sink: "bigquery"
+  bigquery:
+    dataset: "harness_telemetry"
+    traces_table: "execution_traces"
+    metrics_table: "generation_metrics"
+
+mutation:
+  engine: "vertex_gemini"
+  vertex:
+    model: "gemini-2.5-pro"
+
+sandbox:
+  backend: "gke"
+  gke:
+    cluster: "harness-sandbox"
+    namespace_prefix: "mutation-"
+    runtime_class: "gvisor"          # User-space kernel isolation for mutated code
+    service_account: "none"          # No GCP credentials inside candidate pods
+    job_template: "infra/gke/sandbox-job.yaml"

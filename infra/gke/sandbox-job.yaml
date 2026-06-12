@@ -1,0 +1,63 @@
+# Hardened Job template for evaluating mutated harness candidates.
+# Applied into an ephemeral per-mutation namespace; deleted with the namespace.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: evaluator
+  labels:
+    app: self-harness
+    role: mutation-sandbox
+spec:
+  backoffLimit: 0                  # A crashing candidate is a result, not a retry case
+  activeDeadlineSeconds: 1800      # Overridden per-run from SandboxLimits
+  template:
+    metadata:
+      labels:
+        job-name: evaluator
+    spec:
+      runtimeClassName: gvisor     # User-space kernel between candidate code and node
+      restartPolicy: Never
+      automountServiceAccountToken: false   # No GCP credentials inside the pod
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: evaluator
+          image: us-docker.pkg.dev/PROJECT_ID/self-harness/evaluator:latest
+          command: ["python", "-m", "self_harness.evaluation.pipeline"]
+          # args and resources injected by gke_sandbox.GKESandbox._submit_job
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: candidate
+              mountPath: /artifacts
+              readOnly: true
+            - name: results
+              mountPath: /results
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: candidate
+          configMap:
+            name: candidate
+        - name: results
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+---
+# Deny-by-default egress; the model endpoint is allowlisted separately.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all-egress
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress: []
