@@ -199,6 +199,15 @@ python scripts/run_loop.py --config configs/gcp.yaml
 
 ---
 
+## Model Integration
+
+Multi-model orchestration across the Google portfolio — mutation tier,
+orchestration tier, sandboxed open-weight executors, and managed-runtime
+baselines — is specified in [`MODEL_TESTING_MATRIX.md`](MODEL_TESTING_MATRIX.md),
+including per-model roles, serving surfaces, and step-by-step testing plans.
+
+---
+
 ## Research Questions
 
 1. **Convergence** — does harness fitness improve monotonically across
