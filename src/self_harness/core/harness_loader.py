@@ -15,7 +15,6 @@ versions that passed validation, sandbox evaluation, and statistical gating.
 from __future__ import annotations
 
 import importlib.util
-import json
 from pathlib import Path
 from typing import Callable
 

@@ -18,12 +18,53 @@ import logging
 import time
 from pathlib import Path
 
-from .schema import TraceEvent
+from .schema import SpanKind, TraceEvent
 
 logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 4
 BACKOFF_BASE_S = 2.0
+
+
+def record_security_incident(
+    sink,
+    *,
+    lineage_id: str,
+    harness_version: str,
+    generation: int,
+    security_explanation: str,
+    hypothesis: str = "",
+    detail: dict | None = None,
+) -> TraceEvent:
+    """Write one Active Defense security incident to the telemetry sink.
+
+    The incident is a SECURITY_ALERT span streamed through the same path as
+    every other event, so it lands in the `execution_traces` table and is
+    queryable as the agent SIEM feed (see
+    `infra/bigquery/queries/security_incidents.sql`). `lineage_id` ties the
+    incident to the rejected candidate; the offending mutated code is NOT
+    stored — only the engine's explanation and metadata — so a hostile payload
+    is never persisted verbatim.
+
+    Works with any TraceSink (BigQuerySink in production, MemorySink in tests),
+    so the Active Defense path is uniform across backends.
+    """
+    event = TraceEvent(
+        run_id=lineage_id,
+        harness_version=harness_version,
+        kind=SpanKind.SECURITY_ALERT,
+        payload={
+            "event_type": "security_alert",
+            "lineage_id": lineage_id,
+            "generation": generation,
+            "security_explanation": security_explanation,
+            "hypothesis": hypothesis,
+            "action": "fast_fail_before_sandbox",
+            **(detail or {}),
+        },
+    )
+    sink.write([event])
+    return event
 
 
 class BigQuerySink:

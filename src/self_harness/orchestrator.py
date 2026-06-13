@@ -41,6 +41,7 @@ from .mutation.engine import HarnessPatch, MutationEngine
 from .mutation.validators import PatchValidator
 from .sandbox.base import Sandbox, SandboxLimits, SandboxResult
 from .tracing.analyzer import TraceAnalyzer
+from .tracing.bigquery_sink import record_security_incident
 from .tracing.collector import MemorySink, TraceCollector, TraceSink
 
 logger = logging.getLogger(__name__)
@@ -154,6 +155,9 @@ class Orchestrator:
             if k in ("cpu", "memory", "wall_clock_s", "network")
         })
         self.seed = config["evaluation"].get("seed", 0)
+        # Durable telemetry sink, built once. Also carries Active Defense
+        # security incidents (SECURITY_ALERT events) to the SIEM feed.
+        self._sink = build_trace_sink(config)
         self._ensure_genesis(artifacts_dir)
 
     def run(self) -> None:
@@ -176,17 +180,17 @@ class Orchestrator:
 
     def _run_generation(self, generation: int, head: str) -> None:
         # 1-2. ACT + TELEMETRY — training pool only, never the frozen suite.
-        sink = build_trace_sink(self.config)
         local_events = MemorySink()  # In-process copy for analysis + mutation
-        collector = TraceCollector(_TeeSink(sink, local_events))
+        collector = TraceCollector(_TeeSink(self._sink, local_events))
         self._run_training_batch(head, collector)
 
         # 3. ANALYZE
         report = self.analyzer.analyze(local_events.events, harness_version=head)
         logger.info("analysis: %s", report.summary())
 
-        # 4-5. MUTATE + VALIDATE, with bounded retries.
-        patch = self._propose_valid_patch(head, local_events.events, report)
+        # 4-5. MUTATE + VALIDATE, with bounded retries and Active Defense
+        # fast-fail (a security-flagged patch never reaches gates or sandbox).
+        patch = self._propose_valid_patch(generation, head, local_events.events, report)
         if patch is None:
             return
 
@@ -225,7 +229,26 @@ class Orchestrator:
 
     # -- helpers ----------------------------------------------------------
 
-    def _propose_valid_patch(self, head, events, report) -> HarnessPatch | None:
+    def _fast_fail_security(self, generation: int, head: str, patch: HarnessPatch) -> None:
+        lineage_id = (
+            f"sec-g{generation:04d}-"
+            f"{self.registry.content_digest(patch.spec_json, patch.harness_source)}"
+        )
+        logger.critical(
+            "ACTIVE DEFENSE fast-fail [generation %d, %s]: candidate dropped "
+            "before gates/sandbox — %s",
+            generation, lineage_id, patch.security_explanation,
+        )
+        record_security_incident(
+            self._sink,
+            lineage_id=lineage_id,
+            harness_version=head,
+            generation=generation,
+            security_explanation=patch.security_explanation,
+            hypothesis=patch.hypothesis,
+        )
+
+    def _propose_valid_patch(self, generation, head, events, report) -> HarnessPatch | None:
         spec_json, source = self._read_artifact(head)
         request_chars = len(spec_json) + len(source) + sum(
             len(str(e.payload)) for e in events
@@ -241,6 +264,14 @@ class Orchestrator:
             )
             if patch is None:
                 logger.info("no mutation proposed (attempt %d)", attempt + 1)
+                return None
+            # ACTIVE DEFENSE FAST-FAIL: a patch derived from a trace the
+            # mutation engine flagged as an injection attempt is dropped here,
+            # before static gates or the sandbox. The candidate is never
+            # registered, validated, or executed; the incident is logged to the
+            # SIEM feed. (THREAT_MODEL.md §Active Defense, T2.)
+            if patch.security_detected:
+                self._fast_fail_security(generation, head, patch)
                 return None
             digest = self.registry.content_digest(patch.spec_json, patch.harness_source)
             if self.registry.has_content(digest):

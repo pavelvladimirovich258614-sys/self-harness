@@ -239,6 +239,12 @@ Full trust analysis in [`THREAT_MODEL.md`](THREAT_MODEL.md). The short form:
   channel.
 - **Prompt injection via traces is a named threat (T2)**, mitigated by
   layered gating plus a human diff review before any production promotion.
+- **Active Defense**: the mutation engine doubles as an injection sensor —
+  when it flags a hijack attempt in the trace corpus, the orchestrator
+  fast-fails the candidate *before* gates or sandbox and streams a
+  `SECURITY_ALERT` to BigQuery, which serves as the agent SIEM
+  (`infra/bigquery/queries/security_incidents.sql`). See THREAT_MODEL.md
+  §Active Defense.
 - **Spend is hard-capped**: `budget.BudgetGuard` enforces per-generation
   mutation token caps, a sandbox run ceiling, and a cumulative USD kill
   switch checked before every paid operation; GCP billing alerts and Vertex

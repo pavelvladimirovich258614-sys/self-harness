@@ -26,6 +26,10 @@ class SpanKind(str, enum.Enum):
     ERROR = "error"
     TERMINATE = "terminate"
     RUN_END = "run_end"
+    # Active Defense: an indirect-prompt-injection incident flagged by the
+    # mutation engine. Emitted by the orchestrator on fast-fail, queried in
+    # BigQuery as the agent SIEM feed (THREAT_MODEL.md §Active Defense).
+    SECURITY_ALERT = "security_alert"
 
 
 class TraceEvent(BaseModel):
