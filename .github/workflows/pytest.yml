@@ -1,0 +1,30 @@
+name: pytest
+
+# Run the full test suite on every push and pull request. GCP integrations
+# are exercised through mocks (tests/test_gcp_mocks.py), so CI needs no cloud
+# credentials and makes no network calls.
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install package (test extras)
+        run: pip install -e ".[dev]"
+
+      - name: Run pytest
+        run: pytest -q

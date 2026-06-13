@@ -22,6 +22,22 @@ logger = logging.getLogger(__name__)
 CHARS_PER_TOKEN = 4
 
 
+class BudgetExceededError(RuntimeError):
+    """Raised when a spend ceiling is crossed and the loop must stop now.
+
+    Carries the offending scope and figures so the orchestrator can log a
+    precise abort reason and operators can reconcile against GCP billing.
+    """
+
+    def __init__(self, scope: str, spent_usd: float, cap_usd: float):
+        self.scope = scope
+        self.spent_usd = spent_usd
+        self.cap_usd = cap_usd
+        super().__init__(
+            f"budget exceeded [{scope}]: {spent_usd:.4f} USD >= cap {cap_usd:.4f} USD"
+        )
+
+
 @dataclass
 class BudgetConfig:
     max_total_usd: float = 500.0
@@ -29,6 +45,9 @@ class BudgetConfig:
     max_sandbox_runs: int = 500
     mutation_usd_per_mtoken: float = 2.50   # Blended in/out rate for the mutation tier
     sandbox_usd_per_run: float = 1.00       # Amortized GPU + node cost per evaluation
+    # Per-generation USD ceiling. None disables the per-generation cap and
+    # leaves only the cumulative kill switch active (default loop behavior).
+    max_usd_per_generation: float | None = None
 
 
 @dataclass
@@ -56,6 +75,7 @@ class BudgetGuard:
         self.generation_mutation_tokens += tokens
         self.generation_usd += usd
         self.total_usd += usd
+        self._enforce()
 
     def allow_sandbox_run(self) -> bool:
         if self.sandbox_runs >= self.config.max_sandbox_runs:
@@ -67,6 +87,20 @@ class BudgetGuard:
         self.sandbox_runs += 1
         self.generation_usd += self.config.sandbox_usd_per_run
         self.total_usd += self.config.sandbox_usd_per_run
+        self._enforce()
+
+    def _enforce(self) -> None:
+        """Hard stop: raise the moment any USD ceiling is crossed.
+
+        Checked after every spend mutation so the loop cannot continue paying
+        past a cap within a single generation. The cumulative ceiling always
+        applies; the per-generation ceiling applies only when configured.
+        """
+        cap_gen = self.config.max_usd_per_generation
+        if cap_gen is not None and self.generation_usd >= cap_gen:
+            raise BudgetExceededError("generation", self.generation_usd, cap_gen)
+        if self.total_usd >= self.config.max_total_usd:
+            raise BudgetExceededError("total", self.total_usd, self.config.max_total_usd)
 
     @property
     def exhausted(self) -> bool:

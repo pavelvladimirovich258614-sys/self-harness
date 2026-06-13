@@ -31,7 +31,7 @@ from typing import Any, Callable
 
 import yaml
 
-from .budget import BudgetConfig, BudgetGuard
+from .budget import BudgetConfig, BudgetExceededError, BudgetGuard
 from .core.harness import HarnessSpec
 from .core.harness_loader import HarnessLoader
 from .core.registry import HarnessRegistry, Lineage
@@ -165,56 +165,63 @@ class Orchestrator:
             head = self.registry.current()
             logger.info("generation %d: HEAD=%s", generation, head)
 
-            # 1-2. ACT + TELEMETRY — training pool only, never the frozen suite.
-            sink = build_trace_sink(self.config)
-            local_events = MemorySink()  # In-process copy for analysis + mutation
-            collector = TraceCollector(_TeeSink(sink, local_events))
-            self._run_training_batch(head, collector)
-
-            # 3. ANALYZE
-            report = self.analyzer.analyze(local_events.events, harness_version=head)
-            logger.info("analysis: %s", report.summary())
-
-            # 4-5. MUTATE + VALIDATE, with bounded retries.
-            patch = self._propose_valid_patch(head, local_events.events, report)
-            if patch is None:
-                continue
-
-            candidate = self.registry.register(
-                patch.spec_json, patch.harness_source,
-                Lineage(parent_version=head, generation=generation,
-                        trace_batch_id=head, hypothesis=patch.hypothesis),
-            )
-
-            # 6. SANDBOX — candidate and incumbent under matched conditions,
-            # both freshly evaluated this generation (no stale baselines).
-            candidate_result = self._sandbox_eval(candidate)
-            if candidate_result is None or not candidate_result.completed:
-                if candidate_result is not None:
-                    logger.info("candidate %s discarded: %s", candidate, candidate_result.violation)
-                continue
-            incumbent_result = self._sandbox_eval(head)
-            if incumbent_result is None or not incumbent_result.completed:
-                logger.warning("incumbent re-evaluation failed; skipping gate this generation")
-                continue
-
-            # 7. GATE
-            candidate_metrics = GenerationMetrics(
-                harness_version=candidate,
-                per_task_scores=candidate_result.per_task_scores,
-                estimated_cost_usd=self.budget.generation_usd,
-            )
-            incumbent_metrics = GenerationMetrics(
-                harness_version=head, per_task_scores=incumbent_result.per_task_scores
-            )
-            if self.gate.should_promote(incumbent_metrics, candidate_metrics):
-                self.registry.promote(candidate)
-                logger.info("PROMOTED %s (hypothesis: %s)", candidate, patch.hypothesis)
-            else:
-                logger.info("candidate %s did not clear the promotion gate", candidate)
+            try:
+                self._run_generation(generation, head)
+            except BudgetExceededError as exc:
+                logger.error("loop aborted at generation %d: %s", generation, exc)
+                break
 
         logger.info("loop finished: HEAD=%s, total spend %.2f USD",
                     self.registry.current(), self.budget.total_usd)
+
+    def _run_generation(self, generation: int, head: str) -> None:
+        # 1-2. ACT + TELEMETRY — training pool only, never the frozen suite.
+        sink = build_trace_sink(self.config)
+        local_events = MemorySink()  # In-process copy for analysis + mutation
+        collector = TraceCollector(_TeeSink(sink, local_events))
+        self._run_training_batch(head, collector)
+
+        # 3. ANALYZE
+        report = self.analyzer.analyze(local_events.events, harness_version=head)
+        logger.info("analysis: %s", report.summary())
+
+        # 4-5. MUTATE + VALIDATE, with bounded retries.
+        patch = self._propose_valid_patch(head, local_events.events, report)
+        if patch is None:
+            return
+
+        candidate = self.registry.register(
+            patch.spec_json, patch.harness_source,
+            Lineage(parent_version=head, generation=generation,
+                    trace_batch_id=head, hypothesis=patch.hypothesis),
+        )
+
+        # 6. SANDBOX — candidate and incumbent under matched conditions,
+        # both freshly evaluated this generation (no stale baselines).
+        candidate_result = self._sandbox_eval(candidate)
+        if candidate_result is None or not candidate_result.completed:
+            if candidate_result is not None:
+                logger.info("candidate %s discarded: %s", candidate, candidate_result.violation)
+            return
+        incumbent_result = self._sandbox_eval(head)
+        if incumbent_result is None or not incumbent_result.completed:
+            logger.warning("incumbent re-evaluation failed; skipping gate this generation")
+            return
+
+        # 7. GATE
+        candidate_metrics = GenerationMetrics(
+            harness_version=candidate,
+            per_task_scores=candidate_result.per_task_scores,
+            estimated_cost_usd=self.budget.generation_usd,
+        )
+        incumbent_metrics = GenerationMetrics(
+            harness_version=head, per_task_scores=incumbent_result.per_task_scores
+        )
+        if self.gate.should_promote(incumbent_metrics, candidate_metrics):
+            self.registry.promote(candidate)
+            logger.info("PROMOTED %s (hypothesis: %s)", candidate, patch.hypothesis)
+        else:
+            logger.info("candidate %s did not clear the promotion gate", candidate)
 
     # -- helpers ----------------------------------------------------------
 
