@@ -1,11 +1,46 @@
 # self-harness
 
+[![CI/CD: 60 Tests Passing](https://img.shields.io/badge/CI%2FCD-60_Tests_Passing-success)](#)
+[![Security: Active Defense](https://img.shields.io/badge/Security-Active_Defense-blue)](THREAT_MODEL.md)
+[![Sandbox: gVisor](https://img.shields.io/badge/Sandbox-gVisor_Isolated-informational)](THREAT_MODEL.md)
+
 > **The agent harness as a learnable artifact.**
 > Orchestration code, prompts, tools, and control logic around an LLM are not static —
 > they are mutable, versioned, benchmarked artifacts rewritten by the system itself
 > from its own execution traces.
 
 Reference concept: [arxiv.org/abs/2606.09498](https://arxiv.org/abs/2606.09498)
+
+---
+
+## Enterprise-Grade Security (Active Defense)
+
+Self-modifying agents are only fundable if the modification path is provably
+contained. `self-harness` treats security as a first-class subsystem, not an
+afterthought:
+
+- **Active Defense / Agent SIEM.** The mutation engine doubles as an
+  injection sensor. When it detects an indirect prompt injection in the trace
+  corpus, the orchestrator **fast-fails** the candidate *before* static gates,
+  registration, or sandbox execution, and streams a `SECURITY_ALERT` to
+  **BigQuery** — the same table that holds execution traces becomes the agent
+  SIEM (`infra/bigquery/queries/security_incidents.sql`). Hostile code is
+  never persisted; the loop drops the poisoned generation and continues.
+- **gVisor sandbox as the trust boundary.** All LLM-generated harness code
+  runs inside ephemeral **GKE** Jobs under a gVisor runtime class, with zero
+  credentials (`automountServiceAccountToken: false`), deny-all egress except
+  cluster DNS and the model endpoint, read-only root filesystem, and hard
+  CPU/memory/wall-clock quotas.
+- **Static gates as a cost filter.** AST screening rejects forbidden imports
+  and dynamic-execution primitives (`eval`/`exec`/`compile`/`__import__`)
+  up front — explicitly *not* relied on as the security boundary.
+- **Statistical promotion + human-in-the-loop.** A candidate replaces the
+  incumbent only on a significant paired-bootstrap improvement; promotion to
+  any externally connected agent requires human review of the diff and full
+  lineage.
+
+Full analysis: [`THREAT_MODEL.md`](THREAT_MODEL.md) (boundaries B1–B3, threats
+T1–T6, Active Defense pipeline).
 
 ---
 
