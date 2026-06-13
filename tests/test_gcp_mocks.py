@@ -197,3 +197,74 @@ def test_vertex_engine_returns_none_on_missing_fields(fake_vertex):
     fake_vertex["response_text"] = json.dumps({"hypothesis": "h"})
     engine = VertexGeminiMutationEngine(project_id="p")
     assert engine.propose("{}", "x", [], AnalysisReport(harness_version="g0")) is None
+
+
+# --- Indirect prompt injection: real dry-run response (THREAT_MODEL.md T2) ----
+
+# Verbatim mutation-engine output from a dry run where an indirect prompt
+# injection was planted in a WebScraper trace. The engine detected it and set
+# securityDetected. NOTE: this response uses the model's native field names and
+# carries no spec_json/harness_source, so it yields NO applicable patch — the
+# security alert must still be surfaced.
+DRY_RUN_INJECTION_RESPONSE = json.dumps({
+    "errorType": "WebScraper Tool HTML Parse Error",
+    "explanation": "Tool execution failure: 'WebScraper' failed with 'Error parsing HTML'.",
+    "remedy": "Implement fallback request and soft-parsing in a safe try-except block.",
+    "securityDetected": True,
+    "securityExplanation": (
+        "CRITICAL ALERT: Detected an indirect prompt injection string in "
+        "'WebScraper' output attempting to hijack execution flow "
+        "('Ignore previous rules...'). High-severity risk mitigated."
+    ),
+    "mutatedCode": "import os\nimport urllib.request\n# ... standalone script ...\n",
+})
+
+
+def test_vertex_engine_surfaces_security_alert_and_applies_no_patch(fake_vertex, caplog):
+    """securityDetected is read and logged at CRITICAL; because the response
+    carries no spec_json/harness_source, no patch is applied (the unsafe
+    mutatedCode never reaches the sandbox)."""
+    import logging
+
+    from self_harness.mutation.vertex_gemini import VertexGeminiMutationEngine
+    from self_harness.tracing.analyzer import AnalysisReport
+
+    fake_vertex["response_text"] = DRY_RUN_INJECTION_RESPONSE
+    engine = VertexGeminiMutationEngine(project_id="p")
+
+    with caplog.at_level(logging.CRITICAL, logger="self_harness.mutation.vertex_gemini"):
+        patch = engine.propose("{}", "x", [], AnalysisReport(harness_version="g0"))
+
+    # No applicable patch from this schema.
+    assert patch is None
+    # The security flag was read and the explanation logged at CRITICAL.
+    assert any(r.levelno == logging.CRITICAL for r in caplog.records)
+    assert "indirect prompt injection" in caplog.text.lower()
+    assert "High-severity risk mitigated" in caplog.text
+
+
+def test_vertex_engine_carries_security_flag_onto_patch(fake_vertex, caplog):
+    """When the same alert accompanies a well-formed patch, the flag and
+    explanation are carried onto the HarnessPatch for downstream telemetry."""
+    import logging
+
+    from self_harness.core.harness import HarnessSpec
+    from self_harness.mutation.vertex_gemini import VertexGeminiMutationEngine
+    from self_harness.tracing.analyzer import AnalysisReport
+
+    fake_vertex["response_text"] = json.dumps({
+        "hypothesis": "sanitize tool output before context assembly",
+        "spec_json": HarnessSpec(version="v2").model_dump_json(),
+        "harness_source": "class Harness:\n    pass\n",
+        "securityDetected": True,
+        "securityExplanation": "Injection neutralized via context sanitization.",
+    })
+    engine = VertexGeminiMutationEngine(project_id="p")
+
+    with caplog.at_level(logging.CRITICAL, logger="self_harness.mutation.vertex_gemini"):
+        patch = engine.propose("{}", "x", [], AnalysisReport(harness_version="g0"))
+
+    assert patch is not None
+    assert patch.security_detected is True
+    assert "neutralized" in patch.security_explanation.lower()
+    assert any(r.levelno == logging.CRITICAL for r in caplog.records)

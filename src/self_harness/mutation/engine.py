@@ -22,6 +22,12 @@ class HarnessPatch:
     spec_json: str         # New serialized HarnessSpec (prompts, tools, policies)
     harness_source: str    # New harness.py source (control policy)
     rationale: str = ""    # Trace evidence cited by the mutation model
+    # Indirect-prompt-injection signal (THREAT_MODEL.md T2). When the mutation
+    # model reports a hijack attempt embedded in the trace corpus, it is
+    # surfaced here for logging and telemetry regardless of whether a usable
+    # patch was produced.
+    security_detected: bool = False
+    security_explanation: str = ""
 
 
 class MutationEngine(abc.ABC):

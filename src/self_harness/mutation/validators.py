@@ -97,14 +97,14 @@ class PatchValidator:
             return self._check_import(node)
 
         if isinstance(node, ast.Call):
+            # Block the dangerous builtins (eval/exec/compile/__import__/open/
+            # getattr/...) only as bare-name calls. Attribute calls on
+            # allowlisted modules (e.g. re.compile) are legitimate; dangerous
+            # attribute calls (os.system, subprocess.run) are already gated by
+            # the import allowlist, so the bare-name check is sufficient here.
             func = node.func
-            name = (
-                func.id if isinstance(func, ast.Name)
-                else func.attr if isinstance(func, ast.Attribute)
-                else None
-            )
-            if name in FORBIDDEN_CALLS:
-                logger.info("patch rejected: forbidden call %r", name)
+            if isinstance(func, ast.Name) and func.id in FORBIDDEN_CALLS:
+                logger.info("patch rejected: forbidden call %r", func.id)
                 return False
 
         if isinstance(node, ast.Attribute) and node.attr in FORBIDDEN_ATTRIBUTES:

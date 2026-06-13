@@ -90,6 +90,15 @@ class VertexGeminiMutationEngine(MutationEngine):
         except json.JSONDecodeError:
             logger.warning("mutation model returned non-JSON output; skipping generation")
             return None
+
+        # Surface any indirect-prompt-injection signal (THREAT_MODEL.md T2)
+        # before deciding on the patch — the alert matters even when the
+        # response carries no usable patch.
+        security_detected = bool(data.get("securityDetected") or data.get("security_detected"))
+        security_explanation = data.get("securityExplanation") or data.get("security_explanation", "")
+        if security_detected:
+            logger.critical("mutation engine flagged trace security threat: %s", security_explanation)
+
         if data.get("no_change"):
             return None
         required = {"hypothesis", "spec_json", "harness_source"}
@@ -101,4 +110,6 @@ class VertexGeminiMutationEngine(MutationEngine):
             spec_json=data["spec_json"],
             harness_source=data["harness_source"],
             rationale=data.get("rationale", ""),
+            security_detected=security_detected,
+            security_explanation=security_explanation,
         )

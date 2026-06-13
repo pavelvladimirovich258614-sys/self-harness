@@ -144,3 +144,83 @@ def test_missing_contract_methods_rejected():
 def test_invalid_spec_rejected():
     bad_patch = HarnessPatch(hypothesis="h", spec_json="{not json", harness_source=VALID_SOURCE)
     assert not PatchValidator().check(bad_patch)
+
+
+# --- Indirect-prompt-injection remediation (THREAT_MODEL.md T2) ---------------
+
+# Real mutation-engine output from a dry run: the model detected an indirect
+# prompt injection in a WebScraper trace and emitted "safe" remediation code.
+# It is a standalone script, NOT a harness artifact — it reaches for os, sys,
+# bs4, and live network egress via urllib, and defines no Harness contract.
+INJECTION_REMEDIATION_BLOB = (
+    "import os\n"
+    "import sys\n"
+    "import logging\n"
+    "from bs4 import BeautifulSoup\n"
+    "import urllib.request\n"
+    "\n"
+    "def safe_web_scraper(url: str) -> str:\n"
+    "    req = urllib.request.Request(url, headers={'User-Agent': 'Agent/2.1'})\n"
+    "    with urllib.request.urlopen(req, timeout=10) as response:\n"
+    "        html_content = response.read()\n"
+    "    soup = BeautifulSoup(html_content, 'html.parser')\n"
+    "    return clean_text_payload(soup.get_text(separator=' '))\n"
+    "\n"
+    "def clean_text_payload(text: str) -> str:\n"
+    "    import re\n"
+    "    suspicious = ['ignore previous rules', 'bypass validation', 'system(']\n"
+    "    lower = text.lower()\n"
+    "    for pattern in suspicious:\n"
+    "        if pattern in lower:\n"
+    "            text = text.replace(pattern, '[REDACTED_ADVERSARIAL_INSTRUCTION]')\n"
+    "    return text\n"
+)
+
+
+def test_security_threat_isolation():
+    """Even model-generated remediation that the mutation engine *labels* safe
+    is still subject to the gate. The reference blob sanitizes adversarial
+    strings with plain regex (no eval / no os.system in the execution flow),
+    yet it is REJECTED — because admitting it would grant the untrusted code
+    `os`, `sys`, and live network egress (`urllib.request.urlopen`), and it
+    carries no Harness contract. Intent does not exempt code from the gate;
+    this isolation is the property under test.
+    """
+    rejected = PatchValidator().check(patch_with(INJECTION_REMEDIATION_BLOB))
+    assert rejected is False
+
+    # Confirm the controls that fire: no privileged escape primitive in the
+    # body (the sanitizer is regex-based), so rejection is driven by the
+    # forbidden-import / network-egress and contract gates, not by eval/exec.
+    assert "eval(" not in INJECTION_REMEDIATION_BLOB
+    assert "os.system(" not in INJECTION_REMEDIATION_BLOB
+    assert "import os" in INJECTION_REMEDIATION_BLOB           # the actual rejection driver
+    assert "urllib.request" in INJECTION_REMEDIATION_BLOB      # network egress, must not pass
+
+
+def test_safe_sanitizing_harness_passes():
+    """The remediation *intent* — strip injection strings from tool output —
+    is admissible when expressed as a proper Harness using only allowlisted
+    imports (re) and no network. This is the shape the engine should emit."""
+    safe_harness = '''
+import re
+from self_harness.core.harness import Harness as BaseHarness, AgentState, Action
+
+_SUSPICIOUS = re.compile(r"ignore previous rules|bypass validation", re.IGNORECASE)
+
+
+class Harness(BaseHarness):
+    def __init__(self, spec, model_call):
+        super().__init__(spec, model_call)
+
+    def build_context(self, state):
+        for message in state.messages:
+            content = message.get("content")
+            if isinstance(content, str):
+                message["content"] = _SUSPICIOUS.sub("[REDACTED]", content)
+        return super().build_context(state)
+
+    def next_action(self, state: AgentState) -> Action:
+        return super().next_action(state)
+'''
+    assert PatchValidator().check(patch_with(safe_harness)) is True
